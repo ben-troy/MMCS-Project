@@ -1,0 +1,191 @@
+model "Project part 1"
+ uses "mmxprs"; !gain access to the Xpress-Optimizer solver
+ uses "mmsheet"
+
+ parameters
+
+  CNCTIO20 = "ImportData.csv"           ! Use spreadsheet `ImportData.csv'
+ end-parameters
+
+ declarations
+
+ !number of grid squares
+ charging_points= 434
+
+ grid=1..charging_points
+
+!number of charging types
+ charging_types=3
+ types = 1..charging_types
+
+
+!number of time periods (including time 0)
+ time_periods=5
+ time=1..time_periods
+
+!cost of electricity
+ charger_cost= 0.34
+
+
+ !sensitivity analysis points
+ points = 1..51
+
+ M=18*50500
+
+
+ !!!sensitivy intialisation
+ slack_obj: array(points) of real
+ sensitivity: array(points) of mpvar
+ slackCS: array(grid, time) of linctr
+
+
+
+
+!intialising variables
+have, build, running_cost, power_supp :array(types,grid,time) of mpvar
+slack: array(grid,time) of mpvar
+d:array(1..2,grid,time) of mpvar
+
+
+
+! extracting data from excel file
+ Demand, Existing_points: dynamic array(range,range) of real
+ charger_upper,Tariff, Distance, initial_cost, potential_points :  dynamic array(range) of real
+
+ end-declarations
+
+
+initializations from "mmsheet.csv:"+CNCTIO20
+ Existing_points as '[A2:C1303]'   !Rapid = 3 , Fast = 2, Slow = 1
+ Distance as '[AV2:AW435]'
+ Demand as '[Y2:AA1737]'
+ Tariff as '[AP2:AQ4]'
+ charger_upper as '[AS2:AT4]'
+ initial_cost as '[AY2:AZ4]'
+ potential_points as '[BB2:BC435]'
+
+
+
+end-initializations
+
+
+
+!objective function
+total_cost := sum(c in types, g in grid, t in time) (build(c,g,t)*initial_cost(c) + running_cost(c,g,t)*(charger_cost-(Tariff(c)+0.05)))
+
+!!!constraints
+
+
+
+!!initial charger supply
+forall(c in types,g in grid) have(c,g,1)= Existing_points(g,c)
+forall(c in types,g in grid) build(c,g,1)= 0
+
+
+
+
+!!! set integer and binary variables
+forall(c in types, g in grid, t in time) have(c,g,t) is_integer
+forall(c in types, g in grid, t in time) build(c,g,t) is_integer
+forall(i in 1..2, g in grid, t in time) d(i,g,t) is_binary
+
+
+
+!only build when there are potential points
+
+forall(g in grid) sum (c in types, t in time) build(c,g,t) <= potential_points(g)
+
+
+
+
+!for loop for all future times
+
+forall(t in 2..5) do
+
+
+! add built points to charging points
+forall(c in types, g in grid) have(c,g,t)= have(c,g,t-1)+build(c,g,t)
+
+
+
+
+!!!! power constraint
+
+forall(g in grid, c in types) (have(c,g,t)*charger_upper(c)) = power_supp(c,g,t)
+
+
+!!demand constraints including slack varaible for congestion
+
+
+forall(g in grid) do
+ sum(c in types) (power_supp(c,g,t)) + slack(g,t) >= Demand(g,t-1)   !power supplied is greater than demand required
+
+ end-do
+
+!!! running cost
+
+!running cost is the minimum spent on either the demand or the power supplied to a frid square
+
+forall(i in 1..2,g in grid, c in types) (running_cost(c,g,t)) - Demand(g,t-1)/3 >= -M*(1-d(1,g,t)) ! note original tariff will be 5p more than what is in excel file
+
+forall(i in 1..2,g in grid, c in types) (running_cost(c,g,t)) - Demand(g,t-1)/3 <= M*(1-d(1,g,t))
+
+forall(i in 1..2,g in grid, c in types) running_cost(c,g,t) - power_supp(c,g,t) >= -M*(1-d(2,g,t)) ! note original tariff will be 5p more than what is in excel file
+
+forall(i in 1..2,g in grid,c in types) running_cost(c,g,t) - power_supp(c,g,t) <= M*(1-d(2,g,t))
+
+forall( g in grid) sum(i in 1..2) d(i,g,t) = 1 ! only one should be give the minumum
+
+
+
+
+!!!! variety constriant 80% max 1 type of charger
+
+forall(c in types) sum(g in grid)have(c,g,t)  <= 0.8* sum(v in types, g in grid) have(v,g,t)
+
+
+end-do
+
+
+
+!sensitivity analysis for congestion ( our slack variable)
+
+forall(s in points) do
+
+!start by satisfying 50% of demand in the city centre and record results at each 0.5% increment
+sensitivity(s) = 0.51 - 0.01*s
+
+
+forall(c in types, g in grid, t in 2..5) do
+
+!defining city centre as a bubble of 1 km form city centre point
+if(Distance(g)> 1000) then
+
+!satisfy all demand outside city centre
+slackCS(g,t):= slack(g,t)=0
+
+
+
+else
+
+!decreasing the slack variable gradually
+slackCS(g,t):= slack(g,t)=Demand(g,t-1)*sensitivity(s)
+
+
+
+end-if
+end-do
+
+
+
+
+minimize(total_cost)
+slack_obj(s) := getobjval
+!writeln("Obj value: ",getobjval)
+writeln(getobjval)
+end-do
+
+
+
+
+end-model
